@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QuizMaker</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%9D%3C/text%3E%3C/svg%3E">
+<style>
+:root{--bg:#eef2f6;--ink:#14213d;--muted:#5b6b82;--card:#fff;--line:#d5dde8;--accent:#1f4fd8;--ok:#177a4b;--okbg:#e3f4ea;--ko:#b3342b;--kobg:#fbe8e6}
+@media(prefers-color-scheme:dark){:root{--bg:#0e1626;--ink:#e6ecf7;--muted:#9aa9c2;--card:#16213a;--line:#2a3857;--accent:#6c97ff;--ok:#5fd29a;--okbg:#12342a;--ko:#ff8f85;--kobg:#3a1c1c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "Segoe UI",system-ui,sans-serif}
+main{max-width:720px;margin:0 auto;padding:2.5rem 1.2rem 4rem}
+h1{font:700 2.2rem/1.1 Georgia,serif;margin:0 0 .4rem}
+.lead{color:var(--muted);margin:0 0 2rem}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1.4rem;margin-bottom:1.2rem}
+textarea{width:100%;min-height:200px;padding:.8rem;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font:inherit;resize:vertical}
+label{font-weight:600}
+select{font:inherit;padding:.3rem;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+button{font:inherit;font-weight:600;background:var(--accent);color:#fff;border:0;border-radius:6px;padding:.7rem 1.3rem;cursor:pointer}
+button:disabled{opacity:.5;cursor:wait}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin-top:1rem}
+.q h3{margin:0 0 .7rem;font-size:1.05rem}
+.choice{display:block;padding:.55rem .8rem;margin:.35rem 0;border:1px solid var(--line);border-radius:6px;cursor:pointer;font-weight:400}
+.choice.ok{background:var(--okbg);border-color:var(--ok)}
+.choice.ko{background:var(--kobg);border-color:var(--ko)}
+.expl{margin:.7rem 0 0;color:var(--muted);font-size:.95rem}
+.file{background:var(--bg);color:var(--ink);border:1px solid var(--line);padding:.5rem 1rem;margin-bottom:.8rem}
+.note{color:var(--muted);font-size:.95rem;margin:.3rem 0 .8rem}
+.score{font:700 1.6rem Georgia,serif;margin:0 0 .5rem}
+.err{color:var(--ko);font-weight:600}
+.weak{border-left:4px solid var(--ko);padding-left:.8rem;margin:.8rem 0}
+[hidden]{display:none}
+</style>
+</head>
+<body>
+<main>
+<h1>QuizMaker</h1>
+<p class="lead">Colle un cours, réponds au quiz, puis découvre quoi retravailler.</p>
+
+<section id="setup">
+  <label for="file">Importer un cours (PDF, DOCX, TXT ou MD, 5 Mo max)</label>
+  <p><input type="file" id="file" accept=".pdf,.docx,.txt,.md"></p>
+  <p id="note" class="note" role="status"></p>
+  <label for="course">Ou colle le texte du cours</label>
+  <textarea id="course" placeholder="Colle ici le texte de ton cours (100 caractères minimum)…"></textarea>
+  <div class="row">
+    <label for="n">Nombre de questions</label>
+    <select id="n"><option>3</option><option selected>5</option><option>8</option><option>10</option></select>
+    <button id="gen">Générer le quiz</button>
+  </div>
+  <p id="err" class="err" role="alert"></p>
+</section>
+
+<form id="quiz" hidden></form>
+<section id="result" hidden></section>
+<section id="report" hidden></section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
+let quiz = null;
+
+async function api(path, body) {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const data = await r.json();
+  if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Requête invalide : vérifie la longueur du cours.");
+  return data;
+}
+
+$("file").onchange = async () => {
+  const f = $("file").files[0]; if (!f) return;
+  $("err").textContent = ""; $("note").textContent = "Lecture du fichier…";
+  const fd = new FormData(); fd.append("file", f);
+  try {
+    const r = await fetch("/api/extract", {method: "POST", body: fd}), d = await r.json();
+    if (!r.ok) throw new Error(typeof d.detail === "string" ? d.detail : "Fichier invalide.");
+    $("course").value = d.text;
+    $("note").textContent = d.truncated ? "Fichier lu. Il est long : seul le début (environ 40 000 caractères) sera utilisé." : "Fichier lu. Tu peux relire ou modifier le texte ci-dessous.";
+  } catch (e) { $("note").textContent = ""; $("err").textContent = e.message; }
+};
+
+$("gen").onclick = async () => {
+  $("err").textContent = ""; $("gen").disabled = true; $("gen").textContent = "Génération en cours…";
+  ["quiz", "result", "report"].forEach(i => $(i).hidden = true);
+  try {
+    quiz = await api("/api/quiz", {course_text: $("course").value, n_questions: +$("n").value});
+    renderQuiz();
+  } catch (e) { $("err").textContent = e.message; }
+  $("gen").disabled = false; $("gen").textContent = "Générer le quiz";
+};
+
+function renderQuiz() {
+  const f = $("quiz"); f.replaceChildren(el("h2", {textContent: quiz.title}));
+  quiz.questions.forEach((q, i) => {
+    const s = el("section", {className: "q"}, el("h3", {textContent: `${i + 1}. ${q.question}`}));
+    q.choices.forEach((c, j) => s.append(el("label", {className: "choice"},
+      el("input", {type: "radio", name: "q" + i, value: j, required: true}), " " + c)));
+    f.append(s);
+  });
+  f.append(el("button", {type: "submit", textContent: "Corriger mes réponses"}));
+  f.hidden = false; f.scrollIntoView({behavior: "smooth"});
+}
+
+$("quiz").onsubmit = e => {
+  e.preventDefault();
+  let score = 0; window.items = [];
+  quiz.questions.forEach((q, i) => {
+    const chosen = +new FormData($("quiz")).get("q" + i), good = q.answer_index, sec = $("quiz").children[i + 1];
+    if (chosen === good) score++;
+    [...sec.querySelectorAll(".choice")].forEach((l, j) => { l.classList.toggle("ok", j === good); l.classList.toggle("ko", j === chosen && j !== good); });
+    sec.querySelectorAll("input").forEach(x => x.disabled = true);
+    sec.append(el("p", {className: "expl", textContent: q.explanation}));
+    items.push({question: q.question, topic: q.topic, chosen: q.choices[chosen], correct: q.choices[good], is_correct: chosen === good});
+  });
+  $("quiz").querySelector("button").remove();
+  const r = $("result"); r.replaceChildren(el("p", {className: "score", textContent: `Score : ${score} / ${quiz.questions.length}`}),
+    el("button", {id: "rep", textContent: "Générer mon rapport de révision", onclick: makeReport}));
+  r.hidden = false; r.scrollIntoView({behavior: "smooth"});
+};
+
+async function makeReport() {
+  const b = $("rep"); b.disabled = true; b.textContent = "Analyse en cours…";
+  try {
+    const d = await api("/api/report", {items: window.items}), rp = $("report");
+    rp.replaceChildren(el("h2", {textContent: "Ton rapport de révision"}), el("p", {textContent: d.summary}));
+    (d.weak_topics || []).forEach(w => rp.append(el("div", {className: "weak"}, el("strong", {textContent: w.topic}), el("br"), w.advice)));
+    if ((d.strengths || []).length) rp.append(el("p", {textContent: "Points solides : " + d.strengths.join(", ")}));
+    rp.hidden = false; b.remove(); rp.scrollIntoView({behavior: "smooth"});
+  } catch (e) { b.disabled = false; b.textContent = "Réessayer le rapport"; $("result").append(el("p", {className: "err", textContent: e.message})); }
+}
+</script>
+</body>
+</html>
