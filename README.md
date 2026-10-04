@@ -223,3 +223,13 @@ The whole project runs on an Azure student subscription: Basic-tier registry, a 
 ```
 az group delete --name rg-quizmaker
 ```
+## 11. Explaining video
+
+Here's the link for the Google Drive where the video is https://drive.google.com/file/d/1NIJV95i25EbI8fQEPegp6Fx62lZspQco/view?usp=sharing and this is what the video shows :
+- The application deployed on Azure
+- Uploading a course (PDF) and generating the quiz
+- Correction and revision report
+- The CI/CD pipeline definition (GitHub Actions)
+- Code change and `git push`
+- Pipeline running: tests, build, push, deployment
+- The change live on Azure, with no manual action
