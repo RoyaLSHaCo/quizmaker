@@ -1,0 +1,84 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  ACR_NAME: acrquizmaker1234      # <-- remplace par le nom de ton registre
+  RESOURCE_GROUP: rg-quizmaker
+  APP_NAME: quizmaker
+  IMAGE_NAME: quizmaker
+
+permissions:
+  contents: read
+
+jobs:
+  # 1. Tests automatiques : sur chaque push ET chaque pull request
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: pytest -q
+
+  # 2. Pull request : on verifie seulement que l'image se construit (rien n'est deploye)
+  build-check:
+    if: github.event_name == 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t $IMAGE_NAME:pr .
+
+  # 3. Push sur main : build, envoi dans Azure Container Registry, deploiement
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # necessaire pour la connexion OIDC a Azure (aucun mot de passe stocke)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Connexion a Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Connexion au registre
+        run: az acr login --name $ACR_NAME
+
+      - name: Build et push de l'image (tag = identifiant du commit)
+        run: |
+          IMAGE=$ACR_NAME.azurecr.io/$IMAGE_NAME
+          docker build -t $IMAGE:${{ github.sha }} -t $IMAGE:latest .
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
+
+      - name: Deploiement sur Azure Container Apps
+        run: |
+          az extension add --name containerapp --upgrade --yes
+          az containerapp update \
+            --name $APP_NAME \
+            --resource-group $RESOURCE_GROUP \
+            --image $ACR_NAME.azurecr.io/$IMAGE_NAME:${{ github.sha }}
+
+      - name: Smoke test (l'appli repond-elle ?)
+        run: |
+          FQDN=$(az containerapp show --name $APP_NAME --resource-group $RESOURCE_GROUP \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          for i in $(seq 1 10); do
+            curl -fsS "https://$FQDN/health" && exit 0
+            echo "Pas encore pret, nouvel essai dans 10 s..."; sleep 10
+          done
+          echo "L'appli ne repond pas apres deploiement"; exit 1
